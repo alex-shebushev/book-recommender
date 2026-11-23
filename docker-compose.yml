@@ -1,0 +1,62 @@
+# LOCAL DEVELOPMENT ONLY — Postgres + the web app together on one machine.
+# Production deploys the app image on its own (see app/Dockerfile + app/README.md);
+# this file is just a convenient local stack.
+#
+# Usage:
+#   cp .env.example .env   # then edit the password
+#   docker compose up -d --build   # db + app  (app on http://localhost:${APP_PORT:-8000})
+#   docker compose up -d db        # just the DB (run uvicorn on the host with --reload)
+#   docker compose logs -f         # follow logs
+#   docker compose down            # stop (keeps data)
+#   docker compose down -v         # stop AND delete the data volume
+#
+# Connect:  psql postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@localhost:$POSTGRES_PORT/$POSTGRES_DB
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: bookrec-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # Persisted data (survives `down`, removed by `down -v`).
+      - pgdata:/var/lib/postgresql/data
+      # Scripts here run ONLY on first init (empty data volume), in alphabetical order.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The web app (FastAPI/uvicorn, serves the SPA too). Built from app/Dockerfile.
+  # Starts with `docker compose up` alongside the DB. For host-run dev with
+  # --reload, bring up only the DB instead: `docker compose up -d db`.
+  app:
+    build:
+      context: ./app
+    container_name: bookrec-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Reach the DB over the compose network: service name `db`, internal port
+      # 5432 — NOT the host's published port.
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+    env_file:
+      # App config/secrets: ANTHROPIC_API_KEY, BEDROCK_KB_ID, SESSION_SECRET,
+      # AWS_* . Copied from app/.env.example; local only, falls back to defaults
+      # (incl. the insecure SESSION_SECRET) if absent.
+      - path: ./app/.env
+        required: false
+    ports:
+      - "${APP_PORT:-8000}:8000"
+
+volumes:
+  pgdata:

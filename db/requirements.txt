@@ -1,0 +1,4 @@
+# Dependencies for the migration runner (db/migrate.py).
+# Pin exact versions after the first install for reproducibility.
+psycopg[binary]>=3.2
+python-dotenv>=1.0.0

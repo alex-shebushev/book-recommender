@@ -1,0 +1,3 @@
+# Local Python virtualenv for the migration runner.
+.venv/
+__pycache__/

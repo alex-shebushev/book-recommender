@@ -1,0 +1,21 @@
+# Book Recommender — app (agent loop + first tools + FastAPI web API)
+# Pin exact versions after the first `pip install` for reproducibility.
+anthropic>=1.0.0
+python-dotenv>=1.0.0
+# find_similar tool -> Bedrock Knowledge Base Retrieve API
+boto3>=1.34.0
+# find_similar_by_bookshelf graph (per-cluster fan-out via Send). Graph only — the
+# nodes call the raw anthropic SDK + boto3, not LangChain (pulled in transitively).
+langgraph>=1.2.22
+
+# Web API (catalog / book details / bookshelf). Serves the React SPA too.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+# Multipart form parsing for the bookshelf-photo upload (UploadFile).
+python-multipart>=0.0.9
+# Postgres access for the catalog/library endpoints.
+psycopg[binary]>=3.2.0
+psycopg_pool>=3.2.0
+# Auth: password hashing + signed session cookie (SessionMiddleware needs itsdangerous).
+bcrypt>=4.1.0
+itsdangerous>=2.1.0
