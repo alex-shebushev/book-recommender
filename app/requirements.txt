@@ -19,3 +19,6 @@ psycopg_pool>=3.2.0
 # Auth: password hashing + signed session cookie (SessionMiddleware needs itsdangerous).
 bcrypt>=4.1.0
 itsdangerous>=2.1.0
+# Ship application logs to AWS CloudWatch Logs (optional; enabled via
+# CLOUDWATCH_LOG_GROUP). Uses boto3 + the container's injected AWS credentials.
+watchtower>=3.0.0

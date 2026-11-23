@@ -69,6 +69,7 @@ from config import AssistantConfig
 from tools.agent_tools import ToolContext
 from tools.parse_bookshelf import ParseBookshelfError, parse_bookshelf
 from quota import QuotaExceeded, enforce_quota
+from logging_setup import setup_logging
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Signs the session cookie. Set a strong value in production (.env / platform).
@@ -101,6 +102,9 @@ _ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configure logging first (ships to CloudWatch when CLOUDWATCH_LOG_GROUP is
+    # set) so startup and request logs are captured.
+    setup_logging()
     pool.open()
     try:
         yield
