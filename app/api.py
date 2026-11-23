@@ -68,6 +68,7 @@ from assistant import AssistantError, run_assistant
 from config import AssistantConfig
 from tools.agent_tools import ToolContext
 from tools.parse_bookshelf import ParseBookshelfError, parse_bookshelf
+from quota import QuotaExceeded, enforce_quota
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 # Signs the session cookie. Set a strong value in production (.env / platform).
@@ -775,6 +776,14 @@ def assistant_turn(body: AssistantRequest, user: dict = Depends(require_user)) -
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="Tell me what you're in the mood to read.")
+
+    # Daily request quota (per-user + global). Counted before the expensive
+    # agent run; a rejected request is not counted. 429 when a limit is hit.
+    with pool.connection() as conn:
+        try:
+            enforce_quota(conn, uid)
+        except QuotaExceeded as e:
+            raise HTTPException(status_code=429, detail=str(e))
 
     session_id = body.session_id
     if session_id is not None:
