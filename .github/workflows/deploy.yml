@@ -1,0 +1,107 @@
+# Build the Book Recommender app image, push it to ECR, and deploy it to the
+# app EC2 instance over SSH.
+#
+# ── Required GitHub secrets (repo → Settings → Secrets and variables → Actions) ──
+#   AWS_ACCESS_KEY_ID      IAM user key — used for the ECR push AND injected into
+#                          the app container so boto3 can reach Bedrock (find_similar).
+#   AWS_SECRET_ACCESS_KEY  matching secret
+#   EC2_HOST               app instance public IP/DNS  (use an Elastic IP so it
+#                          doesn't change on restart, or update this each time)
+#   EC2_SSH_KEY            full contents of the app instance's .pem private key
+#
+# ── Assumptions about the app EC2 (already set up in this project) ──
+#   * Docker is installed and the `ubuntu` user can run it.
+#   * /home/ubuntu/app.env exists (ANTHROPIC_API_KEY, BEDROCK_KB_ID, ...).
+#   * /home/ubuntu/db.env  exists (POSTGRES_USER/PASSWORD/DB) — used to build
+#     DATABASE_URL pointing at the DB instance's PRIVATE IP (DB_HOST below).
+#   * Security group allows inbound APP_PORT.
+#
+# The EC2 box needs NO AWS credentials/role: the runner generates a short-lived
+# ECR login token and passes it over SSH for `docker login`.
+#
+# NOTE: adjust `branches` to whichever branch you deploy from, and DB_HOST if the
+# database instance's private IP changes.
+
+name: Deploy app
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: gde-aliaksandrsh-br-be
+  APP_CONTEXT: "app"
+  DB_HOST: "172.31.29.248"   # DB instance PRIVATE IP (same VPC as the app box)
+  APP_PORT: "8000"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        run: |
+          set -euo pipefail
+          IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}"
+          # Plain docker build → single linux/amd64 manifest (runner is amd64,
+          # matching the EC2). No buildx attestation artifacts.
+          docker build -t "$IMAGE:latest" -t "$IMAGE:${{ github.sha }}" "${{ env.APP_CONTEXT }}"
+          docker push "$IMAGE:latest"
+          docker push "$IMAGE:${{ github.sha }}"
+          {
+            echo "IMAGE=$IMAGE"
+            echo "REGISTRY=${{ steps.login-ecr.outputs.registry }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Generate ECR token for the EC2 box
+        run: echo "ECR_TOKEN=$(aws ecr get-login-password --region ${{ env.AWS_REGION }})" >> "$GITHUB_ENV"
+
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          # Reuse the same AWS secrets as the ECR push; forwarded into the
+          # container so boto3 can call Bedrock (find_similar / recommendations).
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: ECR_TOKEN,REGISTRY,IMAGE,DB_HOST,APP_PORT,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_DEFAULT_REGION
+          script_stop: true
+          script: |
+            set -eu
+            echo "$ECR_TOKEN" | sudo docker login --username AWS --password-stdin "$REGISTRY"
+            sudo docker pull "$IMAGE:latest"
+            sudo docker rm -f app 2>/dev/null || true
+            set -a; . /home/ubuntu/db.env; set +a
+            sudo docker run -d --name app --restart unless-stopped \
+              --env-file /home/ubuntu/app.env \
+              -e DATABASE_URL="postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@$DB_HOST:5432/$POSTGRES_DB" \
+              -e AWS_ACCESS_KEY_ID="$AWS_ACCESS_KEY_ID" \
+              -e AWS_SECRET_ACCESS_KEY="$AWS_SECRET_ACCESS_KEY" \
+              -e AWS_REGION="$AWS_DEFAULT_REGION" \
+              -e AWS_DEFAULT_REGION="$AWS_DEFAULT_REGION" \
+              -p "$APP_PORT:$APP_PORT" \
+              "$IMAGE:latest"
+            sudo docker image prune -f || true
+            sudo docker ps --filter name=app --format "deployed: {{.Image}}  {{.Status}}"
